@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Analyse Constellation & Terminal - Grille Géo</title>
+    <style>
+        body { margin: 0; display: flex; font-family: sans-serif; background-color: #050505; color: #eee; overflow: hidden; }
+        #sidebar { width: 400px; padding: 20px; background-color: rgba(25, 25, 25, 0.95); box-sizing: border-box; height: 100vh; overflow-y: auto; z-index: 10; border-right: 1px solid #444; }
+        #viewer { flex-grow: 1; height: 100vh; position: relative; }
+        label { display: block; margin-top: 10px; font-size: 0.85em; font-weight: bold; color: #ccc; }
+        input, select { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; background: #222; color: #fff; border: 1px solid #444; border-radius: 4px; }
+        button { margin-top: 15px; width: 100%; padding: 10px; background: #0066cc; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 4px; transition: background 0.2s; }
+        button:hover { background: #0055aa; }
+        h2, h3 { margin-bottom: 5px; color: #fff; border-bottom: 1px solid #555; padding-bottom: 5px; margin-top: 20px;}
+        h2:first-child { margin-top: 0; }
+        .section { margin-bottom: 20px; }
+        #results { margin-top: 20px; padding: 12px; background: rgba(15, 15, 15, 0.9); border-left: 3px solid #00aa55; font-size: 0.9em; border-radius: 4px; }
+        .unit { color: #aaa; font-size: 0.9em; }
+        .stat-line { margin: 5px 0; }
+        hr { border: 0; border-top: 1px solid #444; margin: 10px 0; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+<div id="sidebar">
+    <div class="section">
+        <h2>Constellation</h2>
+        <label>Nombre de satellites : <input type="number" id="numSats" value="1200" min="1"></label>
+        <label>Altitude <span class="unit">(km)</span> : <input type="number" id="altitude" value="550" min="100"></label>
+        <label>Orbite : 
+            <select id="orbitType">
+                <option value="polar">Polaire</option>
+                <option value="inclined" selected>Inclinée</option>
+            </select>
+        </label>
+        <label id="lblMaxLat">Lat. max couverture <span class="unit">(deg)</span> : <input type="number" id="maxLat" value="53" min="0" max="90" step="0.1"></label>
+    </div>
+
+    <div class="section">
+        <h2>Terminal Utilisateur</h2>
+        <label>Latitude <span class="unit">(deg)</span> : <input type="number" id="termLat" value="48.8566" step="0.01"></label>
+        <label>Longitude <span class="unit">(deg)</span> : <input type="number" id="termLon" value="2.3522" step="0.01"></label>
+        <label>Altitude <span class="unit">(km)</span> : <input type="number" id="termAlt" value="10" step="0.1"></label>
+        <label>Élévation minimale antenne <span class="unit">(deg)</span> : <input type="number" id="minElev" value="25" min="0" max="90" step="1"></label>
+    </div>
+
+    <button id="computeBtn">Calculer & Mettre à jour</button>
+
+    <div id="results">
+        <h3>Résultats Analytiques</h3>
+        <div class="stat-line">Vitesse orbitale : <strong><span id="resVOrbit">-</span> km/s</strong></div>
+        <div class="stat-line">Angle au centre du cône : <strong><span id="resAlpha">-</span> °</strong></div>
+        <div class="stat-line">Satellites visibles instantanément : <strong id="resVisibleCount">-</strong></div>
+        <hr>
+        <strong>Statistiques de Visibilité :</strong><br>
+        <div class="stat-line">- Temps max de passage (zénith) : <strong><span id="resTMax">-</span> s</strong></div>
+        <div class="stat-line">- Temps moyen de passage : <strong><span id="resTMean">-</span> s</strong></div>
+        <hr>
+        <strong>Analyse de Couverture :</strong><br>
+        <div class="stat-line" id="resCoverage">En attente de calcul...</div>
+    </div>
+</div>
+
+<div id="viewer"></div>
+
+<script>
+    const MU = 3.986004418e14;
+    const R_E_KM = 6371;
+    const OMEGA_EARTH = 7.2921e-5;
+    const SCALE = 1/1000;
+
+    const EARTH_TEX_URL = 'https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg';
+
+    const container = document.getElementById('viewer');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x020202);
+
+    const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 4000);
+    camera.position.set(0, 15, 30);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    container.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    sunLight.position.set(5, 3, 5);
+    scene.add(sunLight);
+
+    function latLonToVector3(lat, lon, radius) {
+        const phi = (90 - lat) * Math.PI / 180;
+        const theta = (lon + 180) * Math.PI / 180;
+        return new THREE.Vector3(
+            -(radius * Math.sin(phi) * Math.cos(theta)),
+            radius * Math.cos(phi),
+            radius * Math.sin(phi) * Math.sin(theta)
+        );
+    }
+
+    const textureLoader = new THREE.TextureLoader();
+    const earthGeometry = new THREE.SphereGeometry(R_E_KM * SCALE, 64, 64);
+    const earthMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff, specular: 0x222222, shininess: 5 });
+    const earthMesh = new THREE.Mesh(earthGeometry, earthMaterial);
+    scene.add(earthMesh);
+
+    textureLoader.load(EARTH_TEX_URL, function(texture) {
+        earthMaterial.map = texture;
+        earthMaterial.needsUpdate = true;
+    });
+
+    function createGraticule(radiusViz, spacingDeg) {
+        const graticuleGroup = new THREE.Group();
+        const material = new THREE.LineBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.4 });
+        const offsetRadius = radiusViz * 1.002; 
+        for (let lon = -180; lon < 180; lon += spacingDeg) {
+            const points = [];
+            for (let lat = -90; lat <= 90; lat += 2) points.push(latLonToVector3(lat, lon, offsetRadius));
+            graticuleGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material));
+        }
+        for (let lat = -80; lat <= 80; lat += spacingDeg) {
+            const points = [];
+            for (let lon = -180; lon <= 180; lon += 2) points.push(latLonToVector3(lat, lon, offsetRadius));
+            graticuleGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material));
+        }
+        return graticuleGroup;
+    }
+    scene.add(createGraticule(R_E_KM * SCALE, 10));
+
+    function createAirplaneModel() {
+        const group = new THREE.Group();
+        const matWhite = new THREE.MeshPhongMaterial({ color: 0xeeeeee });
+        const matDark = new THREE.MeshPhongMaterial({ color: 0x333333 });
+
+        // Fuselage profilé
+        const fuselageGeom = new THREE.SphereGeometry(1, 16, 16);
+        const fuselage = new THREE.Mesh(fuselageGeom, matWhite);
+        fuselage.scale.set(0.05, 0.05, 0.4); 
+        group.add(fuselage);
+
+        // Aile droite en flèche
+        const wingRightGeom = new THREE.BoxGeometry(0.3, 0.01, 0.1);
+        const wingRight = new THREE.Mesh(wingRightGeom, matWhite);
+        wingRight.position.set(0.15, -0.01, 0.05);
+        wingRight.rotation.y = -Math.PI / 6; 
+        group.add(wingRight);
+
+        // Aile gauche en flèche
+        const wingLeftGeom = new THREE.BoxGeometry(0.3, 0.01, 0.1);
+        const wingLeft = new THREE.Mesh(wingLeftGeom, matWhite);
+        wingLeft.position.set(-0.15, -0.01, 0.05);
+        wingLeft.rotation.y = Math.PI / 6;
+        group.add(wingLeft);
+
+        // Nacelles moteurs
+        const engineGeom = new THREE.CylinderGeometry(0.015, 0.015, 0.08, 12);
+        engineGeom.rotateX(Math.PI / 2);
+        const engineRight = new THREE.Mesh(engineGeom, matDark);
+        engineRight.position.set(0.12, -0.03, 0.06);
+        group.add(engineRight);
+        const engineLeft = new THREE.Mesh(engineGeom, matDark);
+        engineLeft.position.set(-0.12, -0.03, 0.06);
+        group.add(engineLeft);
+
+        // Empennage vertical (dérive)
+        const tailFinGeom = new THREE.BoxGeometry(0.01, 0.15, 0.1);
+        const tailFin = new THREE.Mesh(tailFinGeom, matWhite);
+        tailFin.position.set(0, 0.08, -0.16);
+        tailFin.rotation.x = -Math.PI / 8;
+        group.add(tailFin);
+
+        // Empennage horizontal
+        const stabGeom = new THREE.BoxGeometry(0.18, 0.01, 0.06);
+        const stab = new THREE.Mesh(stabGeom, matWhite);
+        stab.position.set(0, 0.02, -0.18);
+        group.add(stab);
+
+        return group;
+    }
+
+    let satsObj = null, terminalObj = null, visibilityCapObj = null;
+
+    document.getElementById('orbitType').addEventListener('change', e => {
+        document.getElementById('lblMaxLat').style.display = e.target.value === 'inclined' ? 'block' : 'none';
+    });
+
+    function compute() {
+        const numSats = parseInt(document.getElementById('numSats').value);
+        const altKm = parseFloat(document.getElementById('altitude').value);
+        const termLat = parseFloat(document.getElementById('termLat').value);
+        const termLon = parseFloat(document.getElementById('termLon').value);
+        const termAlt = parseFloat(document.getElementById('termAlt').value);
+        const minElevRad = parseFloat(document.getElementById('minElev').value) * Math.PI / 180;
+
+        const rOrbitKm = R_E_KM + altKm;
+        const vOrbitMps = Math.sqrt(MU / (rOrbitKm * 1000));
+        const omegaSat = vOrbitMps / (rOrbitKm * 1000);
+
+        const rTermViz = (R_E_KM + termAlt) * SCALE;
+        const termPosVec = latLonToVector3(termLat, termLon, rTermViz);
+
+        if(terminalObj) scene.remove(terminalObj);
+        terminalObj = createAirplaneModel();
+        terminalObj.position.copy(termPosVec);
+        
+        const zAxis = new THREE.Vector3(0, 1, 0); 
+        const zenith = termPosVec.clone().normalize();
+        terminalObj.quaternion.setFromUnitVectors(zAxis, zenith);
+        terminalObj.rotateX(-Math.PI / 2); 
+        scene.add(terminalObj);
+
+        const termRadiusKm = R_E_KM + termAlt;
+        const cosineArg = (termRadiusKm * Math.cos(minElevRad)) / rOrbitKm;
+        
+        let alphaRad = 0;
+        let isSkyVisible = cosineArg <= 1;
+        if(isSkyVisible) {
+            alphaRad = Math.acos(cosineArg) - minElevRad;
+        }
+
+        if(visibilityCapObj) scene.remove(visibilityCapObj);
+        if(isSkyVisible && alphaRad > 0) {
+            const capGeom = new THREE.SphereGeometry(rOrbitKm * SCALE, 64, 16, 0, Math.PI * 2, 0, alphaRad);
+            const capMat = new THREE.MeshBasicMaterial({ color: 0x00ffaa, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+            visibilityCapObj = new THREE.Mesh(capGeom, capMat);
+            visibilityCapObj.position.set(0, 0, 0);
+            visibilityCapObj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), zenith);
+            scene.add(visibilityCapObj);
+        }
+
+        if(satsObj) scene.remove(satsObj);
+        const satGeom = new THREE.BufferGeometry();
+        const satPos = new Float32Array(numSats * 3);
+        const satColors = new Float32Array(numSats * 3);
+        const phi_golden = Math.PI * (Math.sqrt(5) - 1);
+        let yMax = 1, yMin = -1;
+        
+        if(document.getElementById('orbitType').value === 'inclined') {
+            yMax = Math.sin(parseFloat(document.getElementById('maxLat').value) * Math.PI / 180);
+            yMin = -yMax;
+        }
+
+        const colorHidden = new THREE.Color(0xffaa00);
+        const colorVisible = new THREE.Color(0x00ffaa);
+        let visibleCount = 0;
+
+        for (let i = 0; i < numSats; i++) {
+            const y = yMin + (yMax - yMin) * ((i + 0.5) / numSats);
+            const rCyl = Math.sqrt(1 - y * y) * rOrbitKm * SCALE;
+            const theta = phi_golden * i;
+            
+            const px = Math.cos(theta) * rCyl;
+            const py = y * rOrbitKm * SCALE;
+            const pz = Math.sin(theta) * rCyl;
+
+            satPos[i*3] = px;
+            satPos[i*3+1] = py;
+            satPos[i*3+2] = pz;
+
+            const satVec = new THREE.Vector3(px, py, pz);
+            if (isSkyVisible && satVec.angleTo(termPosVec) <= alphaRad) {
+                satColors[i*3] = colorVisible.r;
+                satColors[i*3+1] = colorVisible.g;
+                satColors[i*3+2] = colorVisible.b;
+                visibleCount++;
+            } else {
+                satColors[i*3] = colorHidden.r;
+                satColors[i*3+1] = colorHidden.g;
+                satColors[i*3+2] = colorHidden.b;
+            }
+        }
+        
+        satGeom.setAttribute('position', new THREE.BufferAttribute(satPos, 3));
+        satGeom.setAttribute('color', new THREE.BufferAttribute(satColors, 3));
+        satsObj = new THREE.Points(satGeom, new THREE.PointsMaterial({ size: 0.15, vertexColors: true, sizeAttenuation: true }));
+        scene.add(satsObj);
+
+        document.getElementById('resVOrbit').innerText = (vOrbitMps / 1000).toFixed(2);
+        document.getElementById('resAlpha').innerText = (alphaRad * 180 / Math.PI).toFixed(2);
+        document.getElementById('resVisibleCount').innerText = visibleCount;
+
+        if(!isSkyVisible) {
+            document.getElementById('resTMax').innerText = "0";
+            document.getElementById('resTMean').innerText = "0";
+            document.getElementById('resCoverage').innerHTML = "<span style='color:#ff4444; font-weight:bold;'>Configuration impossible :</span> Masquage altimétrique total.";
+            return;
+        }
+
+        const omegaRel = Math.sqrt(Math.pow(omegaSat, 2) + Math.pow(OMEGA_EARTH, 2)); 
+        const tMax = (2 * alphaRad) / omegaRel;
+        const tMean = (Math.PI / 4) * tMax;
+
+        document.getElementById('resTMax').innerText = tMax.toFixed(0);
+        document.getElementById('resTMean').innerText = tMean.toFixed(0);
+
+        const deltaMax = Math.sqrt((4 * Math.PI) / (numSats * Math.sqrt(3)));
+        const covEl = document.getElementById('resCoverage');
+        
+        if (alphaRad >= deltaMax) {
+            covEl.innerHTML = "<span style='color:#00ff00; font-weight:bold;'>Couverture continue garantie.</span> (Handover transparent théorique)";
+        } else {
+            const termRatio = termRadiusKm / rOrbitKm;
+            let elevReqRad = Math.atan2(Math.cos(deltaMax) - termRatio, Math.sin(deltaMax));
+            covEl.innerHTML = `<span style='color:#ffaa00; font-weight:bold;'>Coupures de service probables.</span><br>Élévation requise : <strong>${(elevReqRad * 180 / Math.PI).toFixed(1)}°</strong>.`;
+        }
+    }
+
+    document.getElementById('computeBtn').addEventListener('click', compute);
+    window.addEventListener('resize', () => {
+        camera.aspect = container.clientWidth / container.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+    
+    compute(); 
+    animate();
+</script>
+</body>
+</html>
