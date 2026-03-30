@@ -54,7 +54,7 @@
         <div class="stat-line">Cone central angle: <strong><span id="resAlpha">-</span> °</strong></div>
         <div class="stat-line">Simultaneously visible satellites: <strong id="resVisibleCount">-</strong></div>
         <hr>
-        <strong>Statistiques de Visibilité :</strong><br>
+        <strong>Visibility statistics:</strong><br>
         <div class="stat-line">- Max overpass time (zenith) : <strong><span id="resTMax">-</span> s</strong></div>
         <div class="stat-line">- Mean overspass time: <strong><span id="resTMean">-</span> s</strong></div>
         <hr>
@@ -304,7 +304,7 @@
         const covEl = document.getElementById('resCoverage');
         
         if (alphaRad >= deltaMax) {
-            covEl.innerHTML = "<span style='color:#00ff00; font-weight:bold;'>Seamless coverage guaranteed.</span> (Theoritical transparent handover)";
+            covEl.innerHTML = "<span style='color:#00ff00; font-weight:bold;'>Seamless coverage guaranteed</span> (Theoritical transparent handover)";
         } else {
             const termRatio = termRadiusKm / rOrbitKm;
             let elevReqRad = Math.atan2(Math.cos(deltaMax) - termRatio, Math.sin(deltaMax));
